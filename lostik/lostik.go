@@ -2,6 +2,7 @@ package lostik
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -87,11 +88,44 @@ func (ls LoStik) RadioInit(initCmds ...string) error {
 	return nil
 }
 
+func (ls LoStik) Tx(data []byte) error {
+	err := ls.writeCmd(fmt.Sprintf("radio tx %s", hex.EncodeToString(data)))
+	if err != nil {
+		return err
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := ls.readResp(ctx)
+	if err != nil {
+		return err
+	}
+
+	if !strings.HasPrefix(resp, "ok") {
+		return fmt.Errorf("failed transmitting data")
+	}
+
+	resp, err = ls.readResp(ctx)
+	if err != nil {
+		return err
+	}
+
+	if !strings.HasSuffix(resp, "radio_tx_ok") {
+		return fmt.Errorf("failed transmitting data")
+	}
+
+	return nil
+}
+
 func (ls LoStik) writeCmd(cmd string) error {
 	_, err := ls.devicePort.Write([]byte(fmt.Sprintf("%s\r\n", cmd)))
 	if err != nil {
 		return err
 	}
+
+	time.Sleep(500 * time.Millisecond)
 
 	return nil
 }
@@ -120,7 +154,7 @@ func (ls LoStik) readResp(ctx context.Context) (string, error) {
 
 			_, _ = sb.Write(bts[:n])
 
-			if strings.Contains(string(bts), "ok\r") || strings.HasSuffix(string(bts), "\r") {
+			if strings.Contains(string(bts[:n]), "ok\r") || strings.HasSuffix(string(bts[:n]), "\r\n") {
 				done <- struct{}{}
 				return
 			}
