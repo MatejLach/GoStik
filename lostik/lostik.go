@@ -14,6 +14,7 @@ import (
 
 var (
 	RadioInitErr = errors.New("problem initialising radio")
+	RadioTxErr   = errors.New("failed transmitting data")
 )
 
 type LoStik struct {
@@ -104,7 +105,7 @@ func (ls LoStik) Tx(data []byte) error {
 	}
 
 	if !strings.HasPrefix(resp, "ok") {
-		return fmt.Errorf("failed transmitting data")
+		return RadioTxErr
 	}
 
 	resp, err = ls.readResp(ctx)
@@ -113,10 +114,38 @@ func (ls LoStik) Tx(data []byte) error {
 	}
 
 	if !strings.HasSuffix(resp, "radio_tx_ok") {
-		return fmt.Errorf("failed transmitting data")
+		return RadioTxErr
 	}
 
 	return nil
+}
+
+func (ls LoStik) Rx() ([]byte, error) {
+	err := ls.writeCmd("radio rx 0")
+	if err != nil {
+		return nil, err
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := ls.readResp(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err = ls.readResp(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.HasPrefix(resp, "radio_rx") {
+		return hex.DecodeString(strings.TrimSpace(strings.TrimPrefix(resp, "radio_rx")))
+	}
+
+	return nil, nil
 }
 
 func (ls LoStik) writeCmd(cmd string) error {
