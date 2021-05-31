@@ -14,6 +14,8 @@ import (
 
 var (
 	RadioInitErr = errors.New("problem initialising radio")
+	RadioTxErr   = errors.New("failed transmitting data")
+	RadioRxErr   = errors.New("failed receiving data")
 )
 
 type LoStik struct {
@@ -89,34 +91,89 @@ func (ls LoStik) RadioInit(initCmds ...string) error {
 }
 
 func (ls LoStik) Tx(data []byte) error {
-	err := ls.writeCmd(fmt.Sprintf("radio tx %s", hex.EncodeToString(data)))
+	var resp string
+	var err error
+
+	go func(frame []byte) {
+		err = ls.writeCmd(fmt.Sprintf("radio tx %s", hex.EncodeToString(frame)))
+		if err != nil {
+			return
+		}
+
+		time.Sleep(300 * time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		resp, err = ls.readResp(ctx)
+		if err != nil {
+			return
+		}
+
+		if !strings.HasPrefix(resp, "ok") {
+			err = RadioTxErr
+			return
+		}
+
+		resp, err = ls.readResp(ctx)
+		if err != nil {
+			return
+		}
+
+		if !strings.HasSuffix(resp, "radio_tx_ok") {
+			err = RadioTxErr
+			return
+		}
+	}(data)
+
+	return err
+}
+
+func (ls LoStik) Rx() ([]byte, error) {
+	err := ls.writeCmd("radio rx 0")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	time.Sleep(300 * time.Millisecond)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	resp, err := ls.readResp(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if !strings.HasPrefix(resp, "ok") {
-		return fmt.Errorf("failed transmitting data")
+	if strings.HasPrefix(resp, "ok") {
+		resp, err = ls.readResp(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		// receiving a radio_err after an ok seems to be a HW bug of sorts, so prepare for receiving again
+		if strings.HasPrefix(resp, "radio_err") {
+			err := ls.writeCmd("radio rx 0")
+			if err != nil {
+				return nil, err
+			}
+
+			_, err = ls.readResp(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			resp, err = ls.readResp(ctx)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
-	resp, err = ls.readResp(ctx)
-	if err != nil {
-		return err
+	if !strings.HasPrefix(resp, "radio_rx") {
+		return nil, RadioRxErr
 	}
 
-	if !strings.HasSuffix(resp, "radio_tx_ok") {
-		return fmt.Errorf("failed transmitting data")
-	}
-
-	return nil
+	return hex.DecodeString(strings.TrimSpace(strings.TrimPrefix(resp, "radio_rx")))
 }
 
 func (ls LoStik) writeCmd(cmd string) error {
